@@ -1,8 +1,9 @@
 <?php 
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
+include 'includes/db_connect.php';
 
-$post_id = isset($_GET['id']) ? $_GET['id'] : '';
+$post_id = isset($_GET['id']) ? intval($_GET['id']) : 0;
 
 if (empty($post_id)) {
     header("Location: blogs.php");
@@ -10,17 +11,18 @@ if (empty($post_id)) {
 }
 
 $post = null;
-$api_url = "https://hearinghealthcare.aladinngroup.com/wp-json/wp/v2/posts/{$post_id}?_embed";
-
-$opts = array('http' => array('header' => "User-Agent: PHP\r\n", 'timeout' => 10));
-$context = stream_context_create($opts);
-
-$json_data = @file_get_contents($api_url, false, $context);
-if ($json_data) {
-    $post = json_decode($json_data);
+$stmt = $conn->prepare("SELECT * FROM blog_posts WHERE id = ?");
+if ($stmt) {
+    $stmt->bind_param("i", $post_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    if ($result && $result->num_rows > 0) {
+        $post = $result->fetch_object();
+    }
+    $stmt->close();
 }
 
-$page_title = (isset($post->title->rendered)) ? $post->title->rendered : "Blog Post";
+$page_title = ($post && isset($post->title)) ? htmlspecialchars($post->title) : "Blog Post";
 include 'includes/header.php'; 
 ?>
 
@@ -31,35 +33,33 @@ include 'includes/header.php';
     .blog-hero { background-color: #00a8d6; padding: 80px 0; text-align: center; color: white; }
 </style>
 
-<?php if ($post && isset($post->title)): ?>
+<?php if ($post): ?>
     <section class="blog-hero">
         <div class="container mx-auto px-6">
             <div class="inline-block px-4 py-1 bg-white/20 backdrop-blur-sm text-white text-[12px] font-bold rounded-md mb-4 uppercase">
                 Blog Post
             </div>
             <h1 class="text-3xl md:text-5xl font-[900] mb-6 max-w-4xl mx-auto leading-tight">
-                <?php echo $post->title->rendered; ?>
+                <?php echo htmlspecialchars($post->title); ?>
             </h1>
             <div class="flex flex-wrap justify-center items-center gap-6 text-sm opacity-90">
                 <span><i class="far fa-user"></i> admin</span>
-                <span><i class="far fa-calendar-alt"></i> <?php echo date('F d, Y', strtotime($post->date)); ?></span>
+                <span><i class="far fa-calendar-alt"></i> <?php echo date('F d, Y', strtotime($post->created_at)); ?></span>
             </div>
         </div>
     </section>
 
     <section class="py-16 bg-white">
         <div class="container mx-auto px-4 lg:px-32">
-            <?php 
-            if (isset($post->_embedded->{'wp:featuredmedia'}[0]->source_url)): 
-            ?>
+            <?php if (!empty($post->image_url)): ?>
                 <div class="mb-12">
-                    <img src="<?php echo $post->_embedded->{'wp:featuredmedia'}[0]->source_url; ?>" 
-                         class="w-full h-auto rounded-[30px] shadow-lg">
+                    <img src="<?php echo htmlspecialchars($post->image_url); ?>" 
+                         class="w-full h-auto rounded-[30px] shadow-lg" alt="<?php echo htmlspecialchars($post->title); ?>">
                 </div>
             <?php endif; ?>
 
             <div class="blog-content">
-                <?php echo $post->content->rendered; ?>
+                <?php echo $post->content; // Rich text from DB ?>
             </div>
         </div>
     </section>
@@ -76,28 +76,36 @@ include 'includes/header.php';
 <section class="py-16 bg-gray-50 border-t border-gray-100">
     <div class="container mx-auto px-4 md:px-12 lg:px-20">
         <h2 class="text-3xl font-[900] text-[#121926] text-center mb-12">Related Blog Posts</h2>
-        <div id="related-posts-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8"></div>
+        <div id="related-posts-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+        <?php
+        $related_result = $conn->query("SELECT * FROM blog_posts WHERE id != {$post_id} ORDER BY created_at DESC LIMIT 3");
+        if ($related_result && $related_result->num_rows > 0) {
+            while($rel_post = $related_result->fetch_assoc()) {
+                $img = !empty($rel_post['image_url']) ? htmlspecialchars($rel_post['image_url']) : 'https://via.placeholder.com/600x400';
+                $title = htmlspecialchars($rel_post['title']);
+                $id = $rel_post['id'];
+                
+                echo <<<HTML
+                <div class="bg-white rounded-[20px] shadow-sm border border-gray-100 overflow-hidden flex flex-col h-full hover:shadow-lg transition-all duration-300">
+                    <div class="h-48 overflow-hidden">
+                        <img src="{$img}" alt="{$title}" class="w-full h-full object-cover transition-transform duration-500 hover:scale-110">
+                    </div>
+                    <div class="p-6 flex flex-col flex-grow">
+                        <h3 class="text-[18px] font-bold text-[#121926] mb-3 leading-snug">
+                            {$title}
+                        </h3>
+                        <a href="blog-single.php?id={$id}" class="inline-flex items-center justify-center bg-[#00a8d6] text-white px-4 py-2.5 rounded-lg text-sm font-bold hover:bg-[#008db3] transition mt-auto">
+                            Read More <span class="ml-2">→</span>
+                        </a>
+                    </div>
+                </div>
+HTML;
+            }
+        }
+        ?>
+        </div>
     </div>
 </section>
-
-<script>
-fetch('https://hearinghealthcare.aladinngroup.com/wp-json/wp/v2/posts?_embed&per_page=3&exclude=<?php echo $post_id; ?>')
-    .then(res => res.json())
-    .then(posts => {
-        const grid = document.getElementById('related-posts-grid');
-        posts.forEach(p => {
-            const img = p._embedded['wp:featuredmedia'] ? p._embedded['wp:featuredmedia'][0].source_url : '';
-            grid.innerHTML += `
-                <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col h-full hover:shadow-md transition-all">
-                    <img src="${img}" class="w-full h-48 object-cover">
-                    <div class="p-6 flex flex-col flex-grow">
-                        <h3 class="font-bold text-[#121926] mb-3">${p.title.rendered}</h3>
-                        <a href="blog-single.php?id=${p.id}" class="mt-auto text-[#00a8d6] font-bold text-sm">Read More →</a>
-                    </div>
-                </div>`;
-        });
-    }).catch(e => console.log("Related posts error"));
-</script>
 
 
 
